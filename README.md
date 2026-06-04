@@ -1,5 +1,6 @@
 # V2bZ Script
 
+
 Script cài đặt và quản lý V2bZ cho ZicBoard theo hướng UniProxy legacy.
 
 V2bZ không dùng cho node `ZicNode`/`V2Node` gom protocol. Trong ZicBoard hãy tạo node legacy riêng như `VMess`, `VLess`, `Trojan`, `Shadowsocks`, sau đó dùng đúng `Node ID` và `NodeType` của node đó.
