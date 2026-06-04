@@ -1,18 +1,85 @@
-# V2bX
-A V2board node server based on Xray-Core.
+# V2bZ Script
 
-一个基于Xray的V2board节点服务端，支持V2ay,Trojan,Shadowsocks协议
+Script cài đặt và quản lý V2bZ cho ZicBoard theo hướng UniProxy legacy.
 
-Find the source code here: [InazumaV/V2bX](https://github.com/InazumaV/V2bX)
+V2bZ không dùng cho node `ZicNode`/`V2Node` gom protocol. Trong ZicBoard hãy tạo node legacy riêng như `VMess`, `VLess`, `Trojan`, `Shadowsocks`, sau đó dùng đúng `Node ID` và `NodeType` của node đó.
 
-如对脚本不放心，可使用此沙箱先测一遍再使用：https://killercoda.com/playgrounds/scenario/ubuntu
+## Cài Một Lệnh
 
-# 详细使用教程
+Wizard tiếng Việt:
 
-[教程](https://v2bx.v-50.me/)
-
-# 一键安装
-
+```bash
+wget -N https://raw.githubusercontent.com/kutycma/V2bZ-script/master/install.sh && bash install.sh
 ```
-wget -N https://raw.githubusercontent.com/wyx2685/V2bX-script/master/install.sh && bash install.sh
+
+Cài nhanh không cần wizard:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/kutycma/V2bZ-script/master/install.sh) \
+  --quick \
+  --api-host https://panel.example.com \
+  --api-key SERVER_TOKEN \
+  --node-id 1 \
+  --node-type vless \
+  --core xray
 ```
+
+Nếu dùng `--quick` nhưng thiếu tham số, script sẽ chuyển sang wizard tiếng Việt để hỏi phần còn thiếu. Khi chạy không có terminal tương tác, script sẽ báo lỗi rõ và không ghi config.
+
+Xem config sẽ sinh trước khi cài:
+
+```bash
+bash install.sh --quick --dry-run \
+  --api-host https://panel.example.com \
+  --api-key SERVER_TOKEN \
+  --node-id 1 \
+  --node-type vless \
+  --core xray
+```
+
+## Matrix Hỗ Trợ
+
+| Core | NodeType hỗ trợ |
+|---|---|
+| `xray` | `shadowsocks`, `vmess`, `vless`, `trojan` |
+| `sing` | `shadowsocks`, `vmess`, `vless`, `trojan`, `hysteria`, `hysteria2`, `tuic`, `anytls` |
+| `hysteria2` | `hysteria2` |
+
+Network khuyến nghị khi dùng `xray`:
+
+| Protocol | Network hỗ trợ |
+|---|---|
+| `vmess`, `vless` | `tcp`, `ws`, `grpc`, `httpupgrade`, `xhttp` |
+| `trojan` | `tcp`, `ws`, `grpc` |
+
+## Override Repo
+
+Mặc định script tải binary từ `kutycma/V2bZ` và script từ `kutycma/V2bZ-script`. Có thể đổi bằng tham số hoặc biến môi trường:
+
+```bash
+bash install.sh --repo yourname/V2bZ --script-repo yourname/V2bZ-script
+```
+
+```bash
+export V2BZ_REPO=yourname/V2bZ
+export V2BZ_SCRIPT_REPO=yourname/V2bZ-script
+```
+
+## Lệnh Quản Lý
+
+Sau khi cài:
+
+```bash
+V2bZ            # mở menu
+V2bZ status     # xem trạng thái
+V2bZ log        # xem log
+V2bZ generate   # tạo lại cấu hình UniProxy
+V2bZ restart    # khởi động lại service
+```
+
+## Lưu Ý ZicBoard
+
+- API Host là URL panel, ví dụ `https://panel.example.com`.
+- API Key là `server_token` trong cấu hình ZicBoard.
+- `Node ID` là ID của node legacy tương ứng trong panel.
+- Không nhập `zicnode` hoặc `v2node` cho V2bZ; hai loại này thuộc backend ZicNode riêng.

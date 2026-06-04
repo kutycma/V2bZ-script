@@ -1,192 +1,325 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
 
-cur_dir=$(pwd)
+V2BZ_REPO="${V2BZ_REPO:-kutycma/V2bZ}"
+V2BZ_SCRIPT_REPO="${V2BZ_SCRIPT_REPO:-kutycma/V2bZ-script}"
+V2BZ_SCRIPT_BRANCH="${V2BZ_SCRIPT_BRANCH:-master}"
+V2BZ_INSTALL_DIR="${V2BZ_INSTALL_DIR:-/usr/local/V2bZ}"
+V2BZ_CONFIG_DIR="${V2BZ_CONFIG_DIR:-/etc/V2bZ}"
 
-# check root
-[[ $EUID -ne 0 ]] && echo -e "${red}错误：${plain} 必须使用root用户运行此脚本！\n" && exit 1
+quick=0
+dry_run=0
+skip_panel_check=0
+version=""
+api_host=""
+api_key=""
+node_id=""
+node_type=""
+core=""
+cert_mode="none"
+cert_domain="example.com"
 
-# check os
-if [[ -f /etc/redhat-release ]]; then
-    release="centos"
-elif cat /etc/issue | grep -Eqi "alpine"; then
-    release="alpine"
-elif cat /etc/issue | grep -Eqi "debian"; then
-    release="debian"
-elif cat /etc/issue | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /etc/issue | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version | grep -Eqi "debian"; then
-    release="debian"
-elif cat /proc/version | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /proc/version | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version | grep -Eqi "arch"; then
-    release="arch"
-else
-    echo -e "${red}未检测到系统版本，请联系脚本作者！${plain}\n" && exit 1
-fi
+usage() {
+    cat <<EOF
+Cài đặt V2bZ cho ZicBoard UniProxy legacy.
 
-arch=$(uname -m)
+Ví dụ cài nhanh:
+  bash install.sh --quick --api-host https://panel.example.com --api-key SERVER_TOKEN --node-id 1 --node-type vless --core xray
 
-if [[ $arch == "x86_64" || $arch == "x64" || $arch == "amd64" ]]; then
-    arch="64"
-elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
-    arch="arm64-v8a"
-elif [[ $arch == "s390x" ]]; then
-    arch="s390x"
-else
-    arch="64"
-    echo -e "${red}检测架构失败，使用默认架构: ${arch}${plain}"
-fi
+Tùy chọn:
+  --quick                 Cài và sinh config ngay từ tham số
+  --dry-run               Chỉ in config, không cần root và không cài đặt
+  --api-host URL          URL panel ZicBoard
+  --api-key TOKEN         Server Token/API Key
+  --node-id ID            ID node legacy trong panel
+  --node-type TYPE        vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls
+  --core CORE             xray/sing/hysteria2. Nếu bỏ trống sẽ chọn mặc định theo node-type
+  --cert-mode MODE        none/http/dns/self. Mặc định none
+  --cert-domain DOMAIN    Domain chứng chỉ. Mặc định example.com
+  --skip-panel-check      Không gọi thử UniProxy/config trước khi ghi config
+  --repo OWNER/REPO       Repo binary V2bZ. Mặc định ${V2BZ_REPO}
+  --script-repo OWNER/REPO Repo script. Mặc định ${V2BZ_SCRIPT_REPO}
+  --version TAG           Cài tag chỉ định
+  -h, --help              Hiển thị trợ giúp
+EOF
+}
 
-echo "架构: ${arch}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --quick) quick=1 ;;
+        --dry-run) dry_run=1 ;;
+        --skip-panel-check) skip_panel_check=1 ;;
+        --api-host) api_host="$2"; shift ;;
+        --api-key) api_key="$2"; shift ;;
+        --node-id) node_id="$2"; shift ;;
+        --node-type) node_type="$2"; shift ;;
+        --core) core="$2"; shift ;;
+        --cert-mode) cert_mode="$2"; shift ;;
+        --cert-domain) cert_domain="$2"; shift ;;
+        --repo) V2BZ_REPO="$2"; shift ;;
+        --script-repo) V2BZ_SCRIPT_REPO="$2"; shift ;;
+        --version) version="$2"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            if [[ -z "$version" && "$1" != --* ]]; then
+                version="$1"
+            else
+                echo -e "${red}Tham số không hợp lệ: $1${plain}"
+                usage
+                exit 1
+            fi
+            ;;
+    esac
+    shift
+done
 
-if [ "$(getconf WORD_BIT)" != '32' ] && [ "$(getconf LONG_BIT)" != '64' ] ; then
-    echo "本软件不支持 32 位系统(x86)，请使用 64 位系统(x86_64)，如果检测有误，请联系作者"
-    exit 2
-fi
-
-# os version
-if [[ -f /etc/os-release ]]; then
-    os_version=$(awk -F'[= ."]' '/VERSION_ID/{print $3}' /etc/os-release)
-fi
-if [[ -z "$os_version" && -f /etc/lsb-release ]]; then
-    os_version=$(awk -F'[= ."]+' '/DISTRIB_RELEASE/{print $2}' /etc/lsb-release)
-fi
-
-if [[ x"${release}" == x"centos" ]]; then
-    if [[ ${os_version} -le 6 ]]; then
-        echo -e "${red}请使用 CentOS 7 或更高版本的系统！${plain}\n" && exit 1
+load_initconfig() {
+    local script_dir raw_url tmp_file
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+    if [[ -n "$script_dir" && -f "${script_dir}/initconfig.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "${script_dir}/initconfig.sh"
+        return
     fi
-    if [[ ${os_version} -eq 7 ]]; then
-        echo -e "${red}注意： CentOS 7 无法使用hysteria1/2协议！${plain}\n"
+
+    raw_url="https://raw.githubusercontent.com/${V2BZ_SCRIPT_REPO}/${V2BZ_SCRIPT_BRANCH}/initconfig.sh"
+    tmp_file="$(mktemp)"
+    if ! curl -fsSL "$raw_url" -o "$tmp_file"; then
+        echo -e "${red}Không tải được initconfig.sh từ ${raw_url}.${plain}"
+        rm -f "$tmp_file"
+        exit 1
     fi
-elif [[ x"${release}" == x"ubuntu" ]]; then
-    if [[ ${os_version} -lt 16 ]]; then
-        echo -e "${red}请使用 Ubuntu 16 或更高版本的系统！${plain}\n" && exit 1
+    # shellcheck source=/dev/null
+    source "$tmp_file"
+    rm -f "$tmp_file"
+}
+
+load_initconfig
+
+read_with_default() {
+    local prompt="$1"
+    local current="$2"
+    local answer
+
+    if [[ -n "$current" ]]; then
+        read -rp "${prompt} [${current}]: " answer
+        printf '%s' "${answer:-$current}"
+    else
+        read -rp "${prompt}: " answer
+        printf '%s' "$answer"
     fi
-elif [[ x"${release}" == x"debian" ]]; then
-    if [[ ${os_version} -lt 8 ]]; then
-        echo -e "${red}请使用 Debian 8 或更高版本的系统！${plain}\n" && exit 1
+}
+
+quick_missing_required() {
+    [[ -z "$api_host" || -z "$api_key" || -z "$node_id" || -z "$node_type" ]]
+}
+
+prepare_quick_config() {
+    local prompt_mode=0
+
+    api_host="$(v2bz_trim_trailing_slash "$api_host")"
+    node_type="$(v2bz_normalize_node_type "$node_type")"
+    core="$(v2bz_normalize_core "$core")"
+
+    if [[ -n "$node_type" && -z "$core" ]]; then
+        core="$(v2bz_default_core_for_node "$node_type")"
     fi
+
+    if quick_missing_required; then
+        prompt_mode=1
+        if [[ ! -t 0 ]]; then
+            echo -e "${red}Thiếu tham số cài nhanh và không có terminal để hỏi thêm.${plain}"
+            echo -e "${yellow}Hãy truyền đủ --api-host, --api-key, --node-id, --node-type hoặc chạy script trong terminal tương tác.${plain}"
+            exit 1
+        fi
+        echo -e "${yellow}Thiếu tham số cài nhanh. Chuyển sang wizard tiếng Việt để hỏi phần còn thiếu.${plain}"
+        v2bz_print_support_matrix
+        echo
+    fi
+
+    if [[ "$prompt_mode" != "1" ]]; then
+        v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core"
+        return
+    fi
+
+    while [[ -z "$api_host" ]]; do
+        api_host="$(v2bz_trim_trailing_slash "$(read_with_default "Nhập URL panel ZicBoard" "$api_host")")"
+    done
+    while [[ -z "$api_key" ]]; do
+        api_key="$(read_with_default "Nhập Server Token/API Key" "$api_key")"
+    done
+    while true; do
+        node_id="$(read_with_default "Nhập Node ID" "$node_id")"
+        [[ "$node_id" =~ ^[0-9]+$ ]] && break
+        echo -e "${red}Node ID phải là số nguyên dương.${plain}"
+        node_id=""
+    done
+    while true; do
+        node_type="$(v2bz_normalize_node_type "$(read_with_default "Nhập NodeType legacy (vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls)" "$node_type")")"
+        case "$node_type" in
+            zicnode|v2node)
+                echo -e "${red}V2bZ không chạy ZicNode/V2Node. Hãy chọn node legacy qua UniProxy.${plain}"
+                node_type=""
+                ;;
+            shadowsocks|vmess|vless|trojan|hysteria|hysteria2|tuic|anytls)
+                break
+                ;;
+            *)
+                echo -e "${red}NodeType không hợp lệ: ${node_type}.${plain}"
+                node_type=""
+                ;;
+        esac
+    done
+
+    local default_core
+    while true; do
+        default_core="$(v2bz_default_core_for_node "$node_type")"
+        if [[ -z "$core" ]]; then
+            core="$(read_with_default "Nhập core" "$default_core")"
+        fi
+        core="$(v2bz_normalize_core "$core")"
+        if v2bz_core_supported "$core" "$node_type"; then
+            break
+        fi
+        echo -e "${red}Core ${core} không hỗ trợ node ${node_type}.${plain}"
+        v2bz_print_support_matrix
+        core=""
+    done
+
+    v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core"
+}
+
+if [[ "$quick" == "1" ]]; then
+    prepare_quick_config
+elif [[ -n "$node_type" && -z "$core" ]]; then
+    core="$(v2bz_default_core_for_node "$(v2bz_normalize_node_type "$node_type")")"
 fi
+
+if [[ "$dry_run" == "1" ]]; then
+    if [[ "$quick" != "1" ]]; then
+        echo -e "${red}--dry-run cần dùng cùng --quick và đủ tham số node.${plain}"
+        usage
+        exit 1
+    fi
+    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" 1 1
+    exit 0
+fi
+
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${red}Lỗi:${plain} Bạn phải chạy script này bằng quyền root."
+    exit 1
+fi
+
+detect_os() {
+    if [[ -f /etc/redhat-release ]]; then
+        release="centos"
+    elif grep -Eqi 'alpine' /etc/issue 2>/dev/null; then
+        release="alpine"
+    elif grep -Eqi 'debian' /etc/issue 2>/dev/null || grep -Eqi 'debian' /proc/version 2>/dev/null; then
+        release="debian"
+    elif grep -Eqi 'ubuntu' /etc/issue 2>/dev/null || grep -Eqi 'ubuntu' /proc/version 2>/dev/null; then
+        release="ubuntu"
+    elif grep -Eqi 'centos|red hat|redhat|rocky|alma|oracle linux' /etc/issue 2>/dev/null || grep -Eqi 'centos|red hat|redhat|rocky|alma|oracle linux' /proc/version 2>/dev/null; then
+        release="centos"
+    elif grep -Eqi 'arch' /proc/version 2>/dev/null; then
+        release="arch"
+    else
+        echo -e "${red}Không nhận diện được hệ điều hành.${plain}"
+        exit 1
+    fi
+
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|x64|amd64) arch="64" ;;
+        aarch64|arm64) arch="arm64-v8a" ;;
+        s390x) arch="s390x" ;;
+        *)
+            echo -e "${yellow}Không nhận diện được kiến trúc ${arch}, dùng mặc định 64.${plain}"
+            arch="64"
+            ;;
+    esac
+}
 
 install_base() {
-    if [[ x"${release}" == x"centos" ]]; then
-        yum install epel-release wget curl unzip tar crontabs socat ca-certificates -y >/dev/null 2>&1
-        update-ca-trust force-enable >/dev/null 2>&1
-    elif [[ x"${release}" == x"alpine" ]]; then
-        apk add wget curl unzip tar socat ca-certificates >/dev/null 2>&1
-        update-ca-certificates >/dev/null 2>&1
-    elif [[ x"${release}" == x"debian" ]]; then
-        apt-get update -y >/dev/null 2>&1
-        apt install wget curl unzip tar cron socat ca-certificates -y >/dev/null 2>&1
-        update-ca-certificates >/dev/null 2>&1
-    elif [[ x"${release}" == x"ubuntu" ]]; then
-        apt-get update -y >/dev/null 2>&1
-        apt install wget curl unzip tar cron socat -y >/dev/null 2>&1
-        apt-get install ca-certificates wget -y >/dev/null 2>&1
-        update-ca-certificates >/dev/null 2>&1
-    elif [[ x"${release}" == x"arch" ]]; then
-        pacman -Sy --noconfirm >/dev/null 2>&1
-        pacman -S --noconfirm --needed wget curl unzip tar cron socat >/dev/null 2>&1
-        pacman -S --noconfirm --needed ca-certificates wget >/dev/null 2>&1
-    fi
+    case "$release" in
+        centos)
+            yum install -y epel-release wget curl unzip tar crontabs socat ca-certificates nano >/dev/null 2>&1 || true
+            update-ca-trust force-enable >/dev/null 2>&1 || true
+            ;;
+        alpine)
+            apk add --no-cache wget curl unzip tar socat ca-certificates nano >/dev/null
+            update-ca-certificates >/dev/null 2>&1 || true
+            ;;
+        debian|ubuntu)
+            apt-get update -y >/dev/null
+            apt-get install -y wget curl unzip tar cron socat ca-certificates nano >/dev/null
+            update-ca-certificates >/dev/null 2>&1 || true
+            ;;
+        arch)
+            pacman -Sy --noconfirm >/dev/null
+            pacman -S --noconfirm --needed wget curl unzip tar cronie socat ca-certificates nano >/dev/null
+            ;;
+    esac
 }
 
-# 0: running, 1: not running, 2: not installed
-check_status() {
-    if [[ ! -f /usr/local/V2bX/V2bX ]]; then
-        return 2
-    fi
-    if [[ x"${release}" == x"alpine" ]]; then
-        temp=$(service V2bX status | awk '{print $3}')
-        if [[ x"${temp}" == x"started" ]]; then
-            return 0
-        else
-            return 1
-        fi
-    else
-        temp=$(systemctl status V2bX | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
-        if [[ x"${temp}" == x"running" ]]; then
-            return 0
-        else
-            return 1
-        fi
-    fi
+latest_version() {
+    curl -fsSL "https://api.github.com/repos/${V2BZ_REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -n 1
 }
 
-install_V2bX() {
-    if [[ -e /usr/local/V2bX/ ]]; then
-        rm -rf /usr/local/V2bX/
+install_binary() {
+    local tag url zip_file
+    tag="$version"
+    if [[ -z "$tag" ]]; then
+        tag="$(latest_version)"
+    fi
+    if [[ -z "$tag" ]]; then
+        echo -e "${red}Không lấy được phiên bản mới nhất từ GitHub.${plain}"
+        exit 1
     fi
 
-    mkdir /usr/local/V2bX/ -p
-    cd /usr/local/V2bX/
+    echo -e "${green}Cài V2bZ ${tag} từ ${V2BZ_REPO}.${plain}"
+    rm -rf "$V2BZ_INSTALL_DIR"
+    mkdir -p "$V2BZ_INSTALL_DIR" "$V2BZ_CONFIG_DIR"
+    cd "$V2BZ_INSTALL_DIR"
 
-    if  [ $# == 0 ] ;then
-        last_version=$(curl -Ls "https://api.github.com/repos/wyx2685/V2bX/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        if [[ ! -n "$last_version" ]]; then
-            echo -e "${red}检测 V2bX 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 V2bX 版本安装${plain}"
-            exit 1
-        fi
-        echo -e "检测到 V2bX 最新版本：${last_version}，开始安装"
-        wget --no-check-certificate -N --progress=bar -O /usr/local/V2bX/V2bX-linux.zip https://github.com/wyx2685/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 V2bX 失败，请确保你的服务器能够下载 Github 的文件${plain}"
-            exit 1
-        fi
-    else
-        last_version=$1
-        url="https://github.com/wyx2685/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip"
-        echo -e "开始安装 V2bX $1"
-        wget --no-check-certificate -N --progress=bar -O /usr/local/V2bX/V2bX-linux.zip ${url}
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 V2bX $1 失败，请确保此版本存在${plain}"
-            exit 1
-        fi
+    url="https://github.com/${V2BZ_REPO}/releases/download/${tag}/V2bZ-linux-${arch}.zip"
+    zip_file="${V2BZ_INSTALL_DIR}/V2bZ-linux.zip"
+    if ! wget --no-check-certificate -N --progress=bar -O "$zip_file" "$url"; then
+        echo -e "${red}Tải V2bZ thất bại: ${url}${plain}"
+        exit 1
     fi
+    unzip -o "$zip_file" >/dev/null
+    rm -f "$zip_file"
+    chmod +x "${V2BZ_INSTALL_DIR}/V2bZ"
 
-    unzip V2bX-linux.zip
-    rm V2bX-linux.zip -f
-    chmod +x V2bX
-    mkdir /etc/V2bX/ -p
-    cp geoip.dat /etc/V2bX/
-    cp geosite.dat /etc/V2bX/
-    if [[ x"${release}" == x"alpine" ]]; then
-        rm /etc/init.d/V2bX -f
-        cat <<EOF > /etc/init.d/V2bX
+    [[ -f geoip.dat ]] && cp geoip.dat "$V2BZ_CONFIG_DIR/"
+    [[ -f geosite.dat ]] && cp geosite.dat "$V2BZ_CONFIG_DIR/"
+}
+
+install_service() {
+    if [[ "$release" == "alpine" ]]; then
+        cat >/etc/init.d/V2bZ <<EOF
 #!/sbin/openrc-run
-
-name="V2bX"
-description="V2bX"
-
-command="/usr/local/V2bX/V2bX"
-command_args="server"
+name="V2bZ"
+description="V2bZ"
+command="${V2BZ_INSTALL_DIR}/V2bZ"
+command_args="server --config ${V2BZ_CONFIG_DIR}/config.json"
 command_user="root"
-
-pidfile="/run/V2bX.pid"
+pidfile="/run/V2bZ.pid"
 command_background="yes"
-
-depend() {
-        need net
-}
+depend() { need net; }
 EOF
-        chmod +x /etc/init.d/V2bX
-        rc-update add V2bX default
-        echo -e "${green}V2bX ${last_version}${plain} 安装完成，已设置开机自启"
+        chmod +x /etc/init.d/V2bZ
+        rc-update add V2bZ default >/dev/null 2>&1 || true
     else
-        rm /etc/systemd/system/V2bX.service -f
-        cat <<EOF > /etc/systemd/system/V2bX.service
+        cat >/etc/systemd/system/V2bZ.service <<EOF
 [Unit]
-Description=V2bX Service
+Description=V2bZ Service
 After=network.target nss-lookup.target
 Wants=network.target
 
@@ -194,12 +327,9 @@ Wants=network.target
 User=root
 Group=root
 Type=simple
-LimitAS=infinity
-LimitRSS=infinity
-LimitCORE=infinity
 LimitNOFILE=999999
-WorkingDirectory=/usr/local/V2bX/
-ExecStart=/usr/local/V2bX/V2bX server
+WorkingDirectory=${V2BZ_INSTALL_DIR}/
+ExecStart=${V2BZ_INSTALL_DIR}/V2bZ server --config ${V2BZ_CONFIG_DIR}/config.json
 Restart=always
 RestartSec=10
 
@@ -207,85 +337,60 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl stop V2bX
-        systemctl enable V2bX
-        echo -e "${green}V2bX ${last_version}${plain} 安装完成，已设置开机自启"
-    fi
-
-    if [[ ! -f /etc/V2bX/config.json ]]; then
-        cp config.json /etc/V2bX/
-        echo -e ""
-        echo -e "全新安装，请先参看教程：https://v2bx.v-50.me/，配置必要的内容"
-        first_install=true
-    else
-        if [[ x"${release}" == x"alpine" ]]; then
-            service V2bX start
-        else
-            systemctl start V2bX
-        fi
-        sleep 2
-        check_status
-        echo -e ""
-        if [[ $? == 0 ]]; then
-            echo -e "${green}V2bX 重启成功${plain}"
-        else
-            echo -e "${red}V2bX 可能启动失败，请稍后使用 V2bX log 查看日志信息，若无法启动，则可能更改了配置格式，请前往 wiki 查看：https://github.com/V2bX-project/V2bX/wiki${plain}"
-        fi
-        first_install=false
-    fi
-
-    if [[ ! -f /etc/V2bX/dns.json ]]; then
-        cp dns.json /etc/V2bX/
-    fi
-    if [[ ! -f /etc/V2bX/route.json ]]; then
-        cp route.json /etc/V2bX/
-    fi
-    if [[ ! -f /etc/V2bX/custom_outbound.json ]]; then
-        cp custom_outbound.json /etc/V2bX/
-    fi
-    if [[ ! -f /etc/V2bX/custom_inbound.json ]]; then
-        cp custom_inbound.json /etc/V2bX/
-    fi
-    curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
-    chmod +x /usr/bin/V2bX
-    if [ ! -L /usr/bin/v2bx ]; then
-        ln -s /usr/bin/V2bX /usr/bin/v2bx
-        chmod +x /usr/bin/v2bx
-    fi
-    cd $cur_dir
-    rm -f install.sh
-    echo -e ""
-    echo "V2bX 管理脚本使用方法 (兼容使用V2bX执行，大小写不敏感): "
-    echo "------------------------------------------"
-    echo "V2bX              - 显示管理菜单 (功能更多)"
-    echo "V2bX start        - 启动 V2bX"
-    echo "V2bX stop         - 停止 V2bX"
-    echo "V2bX restart      - 重启 V2bX"
-    echo "V2bX status       - 查看 V2bX 状态"
-    echo "V2bX enable       - 设置 V2bX 开机自启"
-    echo "V2bX disable      - 取消 V2bX 开机自启"
-    echo "V2bX log          - 查看 V2bX 日志"
-    echo "V2bX x25519       - 生成 x25519 密钥"
-    echo "V2bX generate     - 生成 V2bX 配置文件"
-    echo "V2bX update       - 更新 V2bX"
-    echo "V2bX update x.x.x - 更新 V2bX 指定版本"
-    echo "V2bX install      - 安装 V2bX"
-    echo "V2bX uninstall    - 卸载 V2bX"
-    echo "V2bX version      - 查看 V2bX 版本"
-    echo "------------------------------------------"
-    curl -fsS --max-time 10 "https://api.v-50.me/counter_v2bx" || true
-    # 首次安装询问是否生成配置文件
-    if [[ $first_install == true ]]; then
-        read -rp "检测到你为第一次安装V2bX,是否自动直接生成配置文件？(y/n): " if_generate
-        if [[ $if_generate == [Yy] ]]; then
-            curl -o ./initconfig.sh -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/initconfig.sh
-            source initconfig.sh
-            rm initconfig.sh -f
-            generate_config_file
-        fi
+        systemctl enable V2bZ >/dev/null 2>&1 || true
     fi
 }
 
-echo -e "${green}开始安装${plain}"
+install_manager() {
+    local raw_url
+    raw_url="https://raw.githubusercontent.com/${V2BZ_SCRIPT_REPO}/${V2BZ_SCRIPT_BRANCH}/V2bZ.sh"
+    curl -fsSL "$raw_url" -o /usr/bin/V2bZ
+    chmod +x /usr/bin/V2bZ
+    ln -sf /usr/bin/V2bZ /usr/bin/v2bz
+}
+
+restart_service() {
+    if [[ "$release" == "alpine" ]]; then
+        service V2bZ restart || true
+        service V2bZ status || true
+    else
+        systemctl restart V2bZ || true
+        systemctl status V2bZ --no-pager -l || true
+    fi
+}
+
+detect_os
+echo -e "${green}Hệ điều hành: ${release}, kiến trúc release: ${arch}.${plain}"
 install_base
-install_V2bX $1
+install_binary
+install_service
+install_manager
+
+if [[ "$quick" == "1" ]]; then
+    if [[ -z "$core" && -n "$node_type" ]]; then
+        core="$(v2bz_default_core_for_node "$(v2bz_normalize_node_type "$node_type")")"
+    fi
+    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" 0 "$skip_panel_check"
+else
+    if [[ ! -f "${V2BZ_CONFIG_DIR}/config.json" ]]; then
+        echo -e "${yellow}Chưa có config. Bắt đầu wizard tạo cấu hình.${plain}"
+        generate_config_file
+    else
+        echo -e "${yellow}Đã có ${V2BZ_CONFIG_DIR}/config.json, giữ nguyên cấu hình hiện tại.${plain}"
+        v2bz_write_aux_files
+    fi
+fi
+
+restart_service
+
+cat <<EOF
+
+${green}Cài đặt hoàn tất.${plain}
+Lệnh quản lý:
+  V2bZ            Mở menu
+  V2bZ status     Xem trạng thái
+  V2bZ log        Xem log
+  V2bZ generate   Tạo lại cấu hình UniProxy
+
+Lưu ý: Trong ZicBoard hãy dùng node legacy VMess/VLess/Trojan/Shadowsocks, không chọn ZicNode/V2Node cho V2bZ.
+EOF
