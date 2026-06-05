@@ -1,0 +1,84 @@
+name: Release Scripts
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag/version release muốn upload file, ví dụ v1.2.3"
+        required: true
+        type: string
+      release_name:
+        description: "Tên release. Để trống sẽ dùng release_tag."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            release_tag="${{ inputs.release_tag }}"
+            release_name="${{ inputs.release_name }}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+            release_name="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$release_tag" ]]; then
+            echo "release_tag không được để trống" >&2
+            exit 1
+          fi
+          asset_version="${release_tag//\//-}"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${release_name:-$release_tag}" >> "$GITHUB_ENV"
+          echo "ASSET_VERSION=$asset_version" >> "$GITHUB_ENV"
+
+      - name: Check scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n install.sh initconfig.sh V2bZ.sh
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="V2bZ-script-${ASSET_VERSION}"
+          mkdir -p "release_assets/${package_dir}"
+          cp README.md LICENSE install.sh initconfig.sh V2bZ.sh V2bZ.service "release_assets/${package_dir}/"
+          chmod +x "release_assets/${package_dir}/install.sh" "release_assets/${package_dir}/initconfig.sh" "release_assets/${package_dir}/V2bZ.sh"
+
+          pushd release_assets >/dev/null
+          zip -9r "../${package_dir}.zip" "${package_dir}"
+          tar -czf "../${package_dir}.tar.gz" "${package_dir}"
+          popd >/dev/null
+
+          sha256sum "${package_dir}.zip" "${package_dir}.tar.gz" install.sh initconfig.sh V2bZ.sh V2bZ.service README.md LICENSE > SHA256SUMS
+
+      - name: Upload files to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --notes "Automated release $RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" \
+            "V2bZ-script-${ASSET_VERSION}.zip" \
+            "V2bZ-script-${ASSET_VERSION}.tar.gz" \
+            SHA256SUMS \
+            install.sh initconfig.sh V2bZ.sh V2bZ.service README.md LICENSE \
+            --clobber
