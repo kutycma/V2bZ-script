@@ -22,7 +22,10 @@ node_id=""
 node_type=""
 core=""
 cert_mode="none"
-cert_domain="example.com"
+cert_domain=""
+cert_provider=""
+cert_dns_env=""
+cert_self_fallback="0"
 
 usage() {
     cat <<EOF
@@ -39,8 +42,11 @@ Tùy chọn:
   --node-id ID            ID node legacy trong panel
   --node-type TYPE        vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls
   --core CORE             xray/sing/hysteria2. Nếu bỏ trống sẽ chọn mặc định theo node-type
-  --cert-mode MODE        none/http/dns/self. Mặc định none
-  --cert-domain DOMAIN    Domain chứng chỉ. Mặc định example.com
+  --cert-mode MODE        auto/none/file/http/dns/self. Mặc định none
+  --cert-domain DOMAIN    Domain chứng chỉ fallback local
+  --cert-provider NAME    DNS provider lego, ví dụ cloudflare
+  --cert-dns-env KV       KEY=VALUE[,KEY=VALUE] cho DNS provider
+  --cert-self-fallback    Khi cert-mode auto, fallback sang cert tự ký nếu ACME lỗi
   --skip-panel-check      Không gọi thử UniProxy/config trước khi ghi config
   --repo OWNER/REPO       Repo binary V2bZ. Mặc định ${V2BZ_REPO}
   --script-repo OWNER/REPO Repo script. Mặc định ${V2BZ_SCRIPT_REPO}
@@ -61,6 +67,9 @@ while [[ $# -gt 0 ]]; do
         --core) core="$2"; shift ;;
         --cert-mode) cert_mode="$2"; shift ;;
         --cert-domain) cert_domain="$2"; shift ;;
+        --cert-provider) cert_provider="$2"; shift ;;
+        --cert-dns-env) cert_dns_env="$2"; shift ;;
+        --cert-self-fallback) cert_self_fallback="1" ;;
         --repo) V2BZ_REPO="$2"; shift ;;
         --script-repo) V2BZ_SCRIPT_REPO="$2"; shift ;;
         --version) version="$2"; shift ;;
@@ -206,7 +215,7 @@ if [[ "$dry_run" == "1" ]]; then
         usage
         exit 1
     fi
-    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" 1 1
+    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" 1 1
     exit 0
 fi
 
@@ -370,7 +379,7 @@ if [[ "$quick" == "1" ]]; then
     if [[ -z "$core" && -n "$node_type" ]]; then
         core="$(v2bz_default_core_for_node "$(v2bz_normalize_node_type "$node_type")")"
     fi
-    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" 0 "$skip_panel_check"
+    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" 0 "$skip_panel_check"
 else
     if [[ ! -f "${V2BZ_CONFIG_DIR}/config.json" ]]; then
         echo -e "${yellow}Chưa có config. Bắt đầu wizard tạo cấu hình.${plain}"

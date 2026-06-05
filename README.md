@@ -25,6 +25,22 @@ bash <(curl -Ls https://raw.githubusercontent.com/kutycma/V2bZ-script/master/ins
   --core xray
 ```
 
+Auto TLS khuyến nghị bật trong panel ZicBoard cho node legacy TLS. V2bZ sẽ đọc `tls_settings` từ panel, tự cấp/gia hạn chứng chỉ và report SHA256 để web tự thêm `pinnedPeerCertSha256` cho client. Các flag cert dưới đây chỉ là fallback local khi panel chưa cấu hình Auto TLS:
+
+```bash
+bash install.sh --quick --dry-run \
+  --api-host https://panel.example.com \
+  --api-key SERVER_TOKEN \
+  --node-id 1 \
+  --node-type vless \
+  --core xray \
+  --cert-mode auto \
+  --cert-domain node.example.com \
+  --cert-provider cloudflare \
+  --cert-dns-env CF_DNS_API_TOKEN=xxxx \
+  --cert-self-fallback
+```
+
 Nếu dùng `--quick` nhưng thiếu tham số, script sẽ chuyển sang wizard tiếng Việt để hỏi phần còn thiếu. Khi chạy không có terminal tương tác, script sẽ báo lỗi rõ và không ghi config.
 
 Xem config sẽ sinh trước khi cài:
@@ -84,3 +100,4 @@ V2bZ restart    # khởi động lại service
 - API Key là `server_token` trong cấu hình ZicBoard.
 - `Node ID` là ID của node legacy tương ứng trong panel.
 - Không nhập `zicnode` hoặc `v2node` cho V2bZ; hai loại này thuộc backend ZicNode riêng.
+- Với `VMess`, `VLess`, `Trojan`, `Hysteria/Hysteria2`, `TUIC`, `AnyTLS`, có thể bật Auto TLS trong panel. `Shadowsocks` không dùng Auto TLS inbound trong phạm vi V2bZ.

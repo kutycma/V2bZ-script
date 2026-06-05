@@ -20,6 +20,39 @@ v2bz_json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+v2bz_render_dns_env_json() {
+    local dns_env="$1"
+    local result="{"
+    local first=1
+    local pair key value
+
+    dns_env="${dns_env//$'\n'/,}"
+    dns_env="${dns_env//$'\r'/,}"
+    IFS=',' read -r -a pairs <<<"$dns_env"
+    for pair in "${pairs[@]}"; do
+        [[ "$pair" == *"="* ]] || continue
+        key="${pair%%=*}"
+        value="${pair#*=}"
+        key="$(echo "$key" | xargs)"
+        value="$(echo "$value" | xargs)"
+        [[ -z "$key" ]] && continue
+        if [[ "$first" == "0" ]]; then
+            result+=", "
+        fi
+        result+="\"$(v2bz_json_escape "$key")\": \"$(v2bz_json_escape "$value")\""
+        first=0
+    done
+    result+="}"
+    printf '%s' "$result"
+}
+
+v2bz_bool_json() {
+    case "$(tr '[:upper:]' '[:lower:]' <<<"$1")" in
+        1|true|yes|y|on) printf 'true' ;;
+        *) printf 'false' ;;
+    esac
+}
+
 v2bz_check_ipv6_support() {
     if command -v ip >/dev/null 2>&1 && ip -6 addr | grep -q 'inet6'; then
         echo 1
@@ -106,6 +139,17 @@ v2bz_validate_quick_values() {
     fi
 }
 
+v2bz_validate_cert_values() {
+    local cert_mode="$(tr '[:upper:]' '[:lower:]' <<<"${1:-none}")"
+    case "$cert_mode" in
+        none|auto|file|http|dns|self) return 0 ;;
+        *)
+            echo -e "${red}CertMode không hợp lệ: ${cert_mode}. Hợp lệ: auto, none, file, http, dns, self.${plain}" >&2
+            return 1
+            ;;
+    esac
+}
+
 v2bz_validate_panel() {
     local api_host="$1"
     local api_key="$2"
@@ -148,9 +192,12 @@ v2bz_render_config() {
     local node_type="$4"
     local core="$5"
     local cert_mode="${6:-none}"
-    local cert_domain="${7:-example.com}"
+    local cert_domain="${7:-}"
+    local cert_provider="${8:-}"
+    local cert_dns_env="${9:-}"
+    local cert_self_fallback="${10:-0}"
     local listen_ip="0.0.0.0"
-    local escaped_api_host escaped_api_key escaped_cert_domain
+    local escaped_api_host escaped_api_key escaped_cert_domain escaped_cert_provider dns_env_json self_fallback_json
 
     if [[ "$(v2bz_check_ipv6_support)" == "1" && "$core" == "sing" ]]; then
         listen_ip="::"
@@ -159,6 +206,9 @@ v2bz_render_config() {
     escaped_api_host="$(v2bz_json_escape "$api_host")"
     escaped_api_key="$(v2bz_json_escape "$api_key")"
     escaped_cert_domain="$(v2bz_json_escape "$cert_domain")"
+    escaped_cert_provider="$(v2bz_json_escape "$cert_provider")"
+    dns_env_json="$(v2bz_render_dns_env_json "$cert_dns_env")"
+    self_fallback_json="$(v2bz_bool_json "$cert_self_fallback")"
 
     local core_config
     case "$core" in
@@ -227,12 +277,13 @@ v2bz_render_config() {
       "CertConfig": {
         "CertMode": "${cert_mode}",
         "RejectUnknownSni": false,
+        "SelfFallback": ${self_fallback_json},
         "CertDomain": "${escaped_cert_domain}",
         "CertFile": "/etc/V2bZ/fullchain.cer",
         "KeyFile": "/etc/V2bZ/cert.key",
         "Email": "v2bz@zicboard.local",
-        "Provider": "cloudflare",
-        "DNSEnv": {}
+        "Provider": "${escaped_cert_provider}",
+        "DNSEnv": ${dns_env_json}
       }
     }
   ]
@@ -307,13 +358,16 @@ v2bz_write_config() {
     local node_type="$4"
     local core="$5"
     local cert_mode="${6:-none}"
-    local cert_domain="${7:-example.com}"
+    local cert_domain="${7:-}"
+    local cert_provider="${8:-}"
+    local cert_dns_env="${9:-}"
+    local cert_self_fallback="${10:-0}"
 
     mkdir -p "$V2BZ_CONFIG_DIR"
     if [[ -f "${V2BZ_CONFIG_DIR}/config.json" ]]; then
         cp "${V2BZ_CONFIG_DIR}/config.json" "${V2BZ_CONFIG_DIR}/config.json.bak.$(date +%Y%m%d%H%M%S)"
     fi
-    v2bz_render_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" >"${V2BZ_CONFIG_DIR}/config.json"
+    v2bz_render_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" >"${V2BZ_CONFIG_DIR}/config.json"
     v2bz_write_aux_files
     echo -e "${green}Đã tạo ${V2BZ_CONFIG_DIR}/config.json.${plain}"
 }
@@ -325,18 +379,23 @@ v2bz_quick_config() {
     local node_type
     local core
     local cert_mode="${6:-none}"
-    local cert_domain="${7:-example.com}"
-    local dry_run="${8:-0}"
-    local skip_check="${9:-0}"
+    local cert_domain="${7:-}"
+    local cert_provider="${8:-}"
+    local cert_dns_env="${9:-}"
+    local cert_self_fallback="${10:-0}"
+    local dry_run="${11:-0}"
+    local skip_check="${12:-0}"
 
     api_host="$(v2bz_trim_trailing_slash "$1")"
     node_type="$(v2bz_normalize_node_type "$4")"
     core="$(v2bz_normalize_core "$5")"
+    cert_mode="$(tr '[:upper:]' '[:lower:]' <<<"$cert_mode")"
 
     v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core" || return 1
+    v2bz_validate_cert_values "$cert_mode" || return 1
 
     if [[ "$dry_run" == "1" ]]; then
-        v2bz_render_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain"
+        v2bz_render_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback"
         return 0
     fi
 
@@ -344,11 +403,11 @@ v2bz_quick_config() {
         v2bz_validate_panel "$api_host" "$api_key" "$node_id" "$node_type" || return 1
     fi
 
-    v2bz_write_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain"
+    v2bz_write_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback"
 }
 
 generate_config_file() {
-    local api_host api_key node_id node_type core default_core cert_mode cert_domain
+    local api_host api_key node_id node_type core default_core cert_mode cert_domain cert_provider cert_dns_env cert_self_fallback
 
     echo -e "${yellow}Trình tạo cấu hình V2bZ cho ZicBoard UniProxy${plain}"
     v2bz_print_support_matrix
@@ -371,15 +430,26 @@ generate_config_file() {
     core="$(v2bz_normalize_core "$core")"
 
     cert_mode="none"
-    cert_domain="example.com"
-    read -rp "V2bZ có cần tự cấp/chỉ định chứng chỉ TLS không? (none/http/dns/self, mặc định none): " cert_mode
+    cert_domain=""
+    cert_provider=""
+    cert_dns_env=""
+    cert_self_fallback="0"
+    read -rp "V2bZ có cần fallback chứng chỉ local không? (auto/none/file/http/dns/self, mặc định none): " cert_mode
     cert_mode="${cert_mode:-none}"
+    cert_mode="$(tr '[:upper:]' '[:lower:]' <<<"$cert_mode")"
     if [[ "$cert_mode" != "none" ]]; then
         read -rp "Nhập domain chứng chỉ: " cert_domain
-        cert_domain="${cert_domain:-example.com}"
+        cert_domain="${cert_domain:-}"
+    fi
+    if [[ "$cert_mode" == "auto" || "$cert_mode" == "dns" ]]; then
+        read -rp "Nhập DNS provider lego (ví dụ cloudflare, bỏ trống nếu dùng HTTP-01): " cert_provider
+        read -rp "Nhập DNS env KEY=VALUE[,KEY=VALUE] (bỏ trống nếu không dùng DNS-01): " cert_dns_env
+    fi
+    if [[ "$cert_mode" == "auto" ]]; then
+        read -rp "Bật self-signed fallback khi ACME lỗi? (y/N): " cert_self_fallback
     fi
 
-    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" 0 0
+    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" 0 0
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
