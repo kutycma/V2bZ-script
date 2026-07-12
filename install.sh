@@ -172,7 +172,7 @@ prepare_quick_config() {
         node_id=""
     done
     while true; do
-        node_type="$(v2bz_normalize_node_type "$(read_with_default "Nhập NodeType legacy (vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls)" "$node_type")")"
+        [[ -n "$node_type" ]] || v2bz_prompt_node_type node_type
         case "$node_type" in
             zicnode|v2node)
                 echo -e "${red}V2bZ không chạy ZicNode/V2Node. Hãy chọn node legacy qua UniProxy.${plain}"

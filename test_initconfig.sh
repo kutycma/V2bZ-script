@@ -15,6 +15,12 @@ v2bz_prompt_core anytls core <<< '2' >/dev/null
 v2bz_prompt_core hysteria2 core <<< '3' >/dev/null
 [[ "$core" == "hysteria2" ]]
 
+node_type=""
+v2bz_prompt_node_type node_type <<< $'9\n2' >/dev/null
+[[ "$node_type" == "vless" ]]
+v2bz_prompt_node_type node_type <<< '8' >/dev/null
+[[ "$node_type" == "anytls" ]]
+
 V2BZ_CONFIG_DIR="${tmp_dir}/wizard"
 v2bz_check_ipv6_support() { echo 0; }
 v2bz_validate_panel() { return 0; }
@@ -23,18 +29,18 @@ generate_config_file <<'EOF' >/dev/null
 https://panel.example.com/
 server-token
 1
-vless
+2
 1
 
 y
 
 2
-hysteria2
+5
 2
 
 y
 3
-trojan
+6
 1
 
 
@@ -58,7 +64,7 @@ generate_config_file <<'EOF' >/dev/null
 https://panel-a.example.com
 token-a
 10
-vless
+2
 1
 
 y
@@ -66,7 +72,7 @@ n
 https://panel-b.example.com
 token-b
 11
-anytls
+8
 2
 
 

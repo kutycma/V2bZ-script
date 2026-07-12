@@ -80,6 +80,40 @@ v2bz_core_supported() {
     esac
 }
 
+v2bz_prompt_node_type() {
+    local result_var="$1"
+    local choice selected
+
+    while true; do
+        echo -e "${yellow}Chọn giao thức cho node:${plain}"
+        echo "1. Shadowsocks"
+        echo "2. VLess"
+        echo "3. VMess"
+        echo "4. Hysteria"
+        echo "5. Hysteria2"
+        echo "6. Trojan"
+        echo "7. TUIC"
+        echo "8. AnyTLS"
+        read -rp "Nhập lựa chọn [1-8]: " choice
+        case "$choice" in
+            1) selected="shadowsocks" ;;
+            2) selected="vless" ;;
+            3) selected="vmess" ;;
+            4) selected="hysteria" ;;
+            5) selected="hysteria2" ;;
+            6) selected="trojan" ;;
+            7) selected="tuic" ;;
+            8) selected="anytls" ;;
+            *)
+                echo -e "${red}Lựa chọn không hợp lệ. Vui lòng chọn từ 1 đến 8.${plain}"
+                continue
+                ;;
+        esac
+        printf -v "$result_var" '%s' "$selected"
+        return 0
+    done
+}
+
 v2bz_prompt_core() {
     local node_type="$1"
     local result_var="$2"
@@ -480,15 +514,7 @@ generate_config_file() {
             echo -e "${red}Node ID phải là số.${plain}"
         done
 
-        while true; do
-            read -rp "Nhập NodeType legacy (vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls): " node_type
-            node_type="$(v2bz_normalize_node_type "$node_type")"
-            case "$node_type" in
-                shadowsocks|vmess|vless|trojan|hysteria|hysteria2|tuic|anytls) break ;;
-                zicnode|v2node) echo -e "${red}V2bZ không chạy ZicNode/V2Node. Hãy chọn node legacy qua UniProxy.${plain}" ;;
-                *) echo -e "${red}NodeType không hợp lệ: ${node_type}.${plain}" ;;
-            esac
-        done
+        v2bz_prompt_node_type node_type
 
         v2bz_prompt_core "$node_type" core
 
