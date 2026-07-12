@@ -41,7 +41,7 @@ Tùy chọn:
   --api-key TOKEN         Server Token/API Key
   --node-id ID            ID node legacy trong panel
   --node-type TYPE        vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls
-  --core CORE             xray/sing/hysteria2. Nếu bỏ trống sẽ chọn mặc định theo node-type
+  --core CORE             xray/sing/hysteria2. Nếu bỏ trống trong terminal sẽ hiện menu chọn core
   --cert-mode MODE        auto/none/file/http/dns/self. Mặc định none
   --cert-domain DOMAIN    Domain chứng chỉ fallback local
   --cert-provider NAME    DNS provider lego, ví dụ cloudflare
@@ -135,10 +135,6 @@ prepare_quick_config() {
     node_type="$(v2bz_normalize_node_type "$node_type")"
     core="$(v2bz_normalize_core "$core")"
 
-    if [[ -n "$node_type" && -z "$core" ]]; then
-        core="$(v2bz_default_core_for_node "$node_type")"
-    fi
-
     if quick_missing_required; then
         prompt_mode=1
         if [[ ! -t 0 ]]; then
@@ -152,6 +148,13 @@ prepare_quick_config() {
     fi
 
     if [[ "$prompt_mode" != "1" ]]; then
+        if [[ -z "$core" ]]; then
+            if [[ -t 0 ]]; then
+                v2bz_prompt_core "$node_type" core
+            else
+                core="$(v2bz_default_core_for_node "$node_type")"
+            fi
+        fi
         v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core"
         return
     fi
@@ -185,20 +188,11 @@ prepare_quick_config() {
         esac
     done
 
-    local default_core
-    while true; do
-        default_core="$(v2bz_default_core_for_node "$node_type")"
-        if [[ -z "$core" ]]; then
-            core="$(read_with_default "Nhập core" "$default_core")"
-        fi
-        core="$(v2bz_normalize_core "$core")"
-        if v2bz_core_supported "$core" "$node_type"; then
-            break
-        fi
+    if [[ -n "$core" ]] && ! v2bz_core_supported "$core" "$node_type"; then
         echo -e "${red}Core ${core} không hỗ trợ node ${node_type}.${plain}"
-        v2bz_print_support_matrix
         core=""
-    done
+    fi
+    [[ -n "$core" ]] || v2bz_prompt_core "$node_type" core
 
     v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core"
 }

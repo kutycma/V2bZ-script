@@ -169,7 +169,7 @@ edit_config() {
 generate_config() {
     require_root
     load_initconfig
-    generate_config_file
+    generate_config_file || return 1
     restart_v2bz
 }
 

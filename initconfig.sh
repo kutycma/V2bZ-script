@@ -80,6 +80,34 @@ v2bz_core_supported() {
     esac
 }
 
+v2bz_prompt_core() {
+    local node_type="$1"
+    local result_var="$2"
+    local choice selected
+
+    while true; do
+        echo -e "${yellow}Chọn core cho node ${node_type}:${plain}"
+        echo "1. xray"
+        echo "2. sing"
+        echo "3. hysteria2"
+        read -rp "Nhập lựa chọn [1-3]: " choice
+        case "$choice" in
+            1) selected="xray" ;;
+            2) selected="sing" ;;
+            3) selected="hysteria2" ;;
+            *)
+                echo -e "${red}Lựa chọn không hợp lệ. Vui lòng chọn 1, 2 hoặc 3.${plain}"
+                continue
+                ;;
+        esac
+        if v2bz_core_supported "$selected" "$node_type"; then
+            printf -v "$result_var" '%s' "$selected"
+            return 0
+        fi
+        echo -e "${red}Core ${selected} không hỗ trợ node ${node_type}. Vui lòng chọn lại.${plain}"
+    done
+}
+
 v2bz_print_support_matrix() {
     cat <<'EOF'
 V2bZ đang chạy theo UniProxy legacy của ZicBoard.
@@ -185,7 +213,40 @@ v2bz_validate_panel() {
     return 1
 }
 
-v2bz_render_config() {
+v2bz_render_core_config() {
+    case "$1" in
+        xray)
+            cat <<'EOF'
+    {
+      "Type": "xray",
+      "Log": {"Level": "error", "ErrorPath": "/etc/V2bZ/error.log"},
+      "OutboundConfigPath": "/etc/V2bZ/custom_outbound.json",
+      "RouteConfigPath": "/etc/V2bZ/route.json"
+    }
+EOF
+            ;;
+        sing)
+            cat <<'EOF'
+    {
+      "Type": "sing",
+      "Log": {"Level": "error", "Timestamp": true},
+      "NTP": {"Enable": false, "Server": "time.apple.com", "ServerPort": 0},
+      "OriginalPath": "/etc/V2bZ/sing_origin.json"
+    }
+EOF
+            ;;
+        hysteria2)
+            cat <<'EOF'
+    {
+      "Type": "hysteria2",
+      "Log": {"Level": "error"}
+    }
+EOF
+            ;;
+    esac
+}
+
+v2bz_render_node_config() {
     local api_host="$1"
     local api_key="$2"
     local node_id="$3"
@@ -210,32 +271,6 @@ v2bz_render_config() {
     dns_env_json="$(v2bz_render_dns_env_json "$cert_dns_env")"
     self_fallback_json="$(v2bz_bool_json "$cert_self_fallback")"
 
-    local core_config
-    case "$core" in
-        xray)
-            core_config='{
-      "Type": "xray",
-      "Log": {"Level": "error", "ErrorPath": "/etc/V2bZ/error.log"},
-      "OutboundConfigPath": "/etc/V2bZ/custom_outbound.json",
-      "RouteConfigPath": "/etc/V2bZ/route.json"
-    }'
-            ;;
-        sing)
-            core_config='{
-      "Type": "sing",
-      "Log": {"Level": "error", "Timestamp": true},
-      "NTP": {"Enable": false, "Server": "time.apple.com", "ServerPort": 0},
-      "OriginalPath": "/etc/V2bZ/sing_origin.json"
-    }'
-            ;;
-        hysteria2)
-            core_config='{
-      "Type": "hysteria2",
-      "Log": {"Level": "error"}
-    }'
-            ;;
-    esac
-
     local extra_options
     case "$core" in
         xray)
@@ -257,12 +292,6 @@ v2bz_render_config() {
     esac
 
     cat <<EOF
-{
-  "Log": {"Level": "error", "Output": ""},
-  "Cores": [
-    ${core_config}
-  ],
-  "Nodes": [
     {
       "Core": "${core}",
       "ApiHost": "${escaped_api_host}",
@@ -286,9 +315,32 @@ v2bz_render_config() {
         "DNSEnv": ${dns_env_json}
       }
     }
+EOF
+}
+
+v2bz_render_full_config() {
+    local cores_config="$1"
+    local nodes_config="$2"
+
+    cat <<EOF
+{
+  "Log": {"Level": "error", "Output": ""},
+  "Cores": [
+${cores_config}
+  ],
+  "Nodes": [
+${nodes_config}
   ]
 }
 EOF
+}
+
+v2bz_render_config() {
+    local core_config node_config
+
+    core_config="$(v2bz_render_core_config "$5")"
+    node_config="$(v2bz_render_node_config "$@")"
+    v2bz_render_full_config "$core_config" "$node_config"
 }
 
 v2bz_write_aux_files() {
@@ -351,25 +403,25 @@ masquerade:
 EOF
 }
 
-v2bz_write_config() {
-    local api_host="$1"
-    local api_key="$2"
-    local node_id="$3"
-    local node_type="$4"
-    local core="$5"
-    local cert_mode="${6:-none}"
-    local cert_domain="${7:-}"
-    local cert_provider="${8:-}"
-    local cert_dns_env="${9:-}"
-    local cert_self_fallback="${10:-0}"
+v2bz_write_config_parts() {
+    local cores_config="$1"
+    local nodes_config="$2"
 
     mkdir -p "$V2BZ_CONFIG_DIR"
     if [[ -f "${V2BZ_CONFIG_DIR}/config.json" ]]; then
         cp "${V2BZ_CONFIG_DIR}/config.json" "${V2BZ_CONFIG_DIR}/config.json.bak.$(date +%Y%m%d%H%M%S)"
     fi
-    v2bz_render_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" >"${V2BZ_CONFIG_DIR}/config.json"
+    v2bz_render_full_config "$cores_config" "$nodes_config" >"${V2BZ_CONFIG_DIR}/config.json"
     v2bz_write_aux_files
     echo -e "${green}Đã tạo ${V2BZ_CONFIG_DIR}/config.json.${plain}"
+}
+
+v2bz_write_config() {
+    local core_config node_config
+
+    core_config="$(v2bz_render_core_config "$5")"
+    node_config="$(v2bz_render_node_config "$@")"
+    v2bz_write_config_parts "$core_config" "$node_config"
 }
 
 v2bz_quick_config() {
@@ -407,7 +459,11 @@ v2bz_quick_config() {
 }
 
 generate_config_file() {
-    local api_host api_key node_id node_type core default_core cert_mode cert_domain cert_provider cert_dns_env cert_self_fallback
+    local api_host api_key node_id node_type core cert_mode cert_domain cert_provider cert_dns_env cert_self_fallback
+    local add_more fixed_api_answer node_config core_config
+    local cores_config="" nodes_config=""
+    local reuse_api=1 reuse_prompted=0
+    local core_xray=0 core_sing=0 core_hysteria2=0
 
     echo -e "${yellow}Trình tạo cấu hình V2bZ cho ZicBoard UniProxy${plain}"
     v2bz_print_support_matrix
@@ -416,40 +472,88 @@ generate_config_file() {
     read -rp "Nhập URL panel ZicBoard (ví dụ https://panel.example.com): " api_host
     api_host="$(v2bz_trim_trailing_slash "$api_host")"
     read -rp "Nhập Server Token/API Key: " api_key
+
     while true; do
-        read -rp "Nhập Node ID: " node_id
-        [[ "$node_id" =~ ^[0-9]+$ ]] && break
-        echo -e "${red}Node ID phải là số.${plain}"
+        while true; do
+            read -rp "Nhập Node ID: " node_id
+            [[ "$node_id" =~ ^[0-9]+$ ]] && break
+            echo -e "${red}Node ID phải là số.${plain}"
+        done
+
+        while true; do
+            read -rp "Nhập NodeType legacy (vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls): " node_type
+            node_type="$(v2bz_normalize_node_type "$node_type")"
+            case "$node_type" in
+                shadowsocks|vmess|vless|trojan|hysteria|hysteria2|tuic|anytls) break ;;
+                zicnode|v2node) echo -e "${red}V2bZ không chạy ZicNode/V2Node. Hãy chọn node legacy qua UniProxy.${plain}" ;;
+                *) echo -e "${red}NodeType không hợp lệ: ${node_type}.${plain}" ;;
+            esac
+        done
+
+        v2bz_prompt_core "$node_type" core
+
+        cert_mode="none"
+        cert_domain=""
+        cert_provider=""
+        cert_dns_env=""
+        cert_self_fallback="0"
+        read -rp "V2bZ có cần fallback chứng chỉ local không? (auto/none/file/http/dns/self, mặc định none): " cert_mode
+        cert_mode="${cert_mode:-none}"
+        cert_mode="$(tr '[:upper:]' '[:lower:]' <<<"$cert_mode")"
+        if [[ "$cert_mode" != "none" ]]; then
+            read -rp "Nhập domain chứng chỉ: " cert_domain
+        fi
+        if [[ "$cert_mode" == "auto" || "$cert_mode" == "dns" ]]; then
+            read -rp "Nhập DNS provider lego (ví dụ cloudflare, bỏ trống nếu dùng HTTP-01): " cert_provider
+            read -rp "Nhập DNS env KEY=VALUE[,KEY=VALUE] (bỏ trống nếu không dùng DNS-01): " cert_dns_env
+        fi
+        if [[ "$cert_mode" == "auto" ]]; then
+            read -rp "Bật self-signed fallback khi ACME lỗi? (y/N): " cert_self_fallback
+        fi
+
+        v2bz_validate_quick_values "$api_host" "$api_key" "$node_id" "$node_type" "$core" || return 1
+        v2bz_validate_cert_values "$cert_mode" || return 1
+        v2bz_validate_panel "$api_host" "$api_key" "$node_id" "$node_type" || return 1
+
+        node_config="$(v2bz_render_node_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback")"
+        [[ -n "$nodes_config" ]] && nodes_config+=","$'\n'
+        nodes_config+="$node_config"
+        case "$core" in
+            xray) core_xray=1 ;;
+            sing) core_sing=1 ;;
+            hysteria2) core_hysteria2=1 ;;
+        esac
+
+        read -rp "Bạn có muốn cấu hình thêm node nữa không? (y/N): " add_more
+        [[ "$add_more" =~ ^[Yy]$ ]] || break
+
+        if [[ "$reuse_prompted" == "0" ]]; then
+            read -rp "Dùng chung URL panel và API Key cho các node tiếp theo? (Y/n): " fixed_api_answer
+            [[ "$fixed_api_answer" =~ ^[Nn]$ ]] && reuse_api=0
+            reuse_prompted=1
+        fi
+        if [[ "$reuse_api" == "0" ]]; then
+            read -rp "Nhập URL panel ZicBoard (ví dụ https://panel.example.com): " api_host
+            api_host="$(v2bz_trim_trailing_slash "$api_host")"
+            read -rp "Nhập Server Token/API Key: " api_key
+        fi
     done
 
-    read -rp "Nhập NodeType legacy (vmess/vless/trojan/shadowsocks/hysteria/hysteria2/tuic/anytls): " node_type
-    node_type="$(v2bz_normalize_node_type "$node_type")"
-    default_core="$(v2bz_default_core_for_node "$node_type")"
-    read -rp "Nhập core [mặc định ${default_core}]: " core
-    core="${core:-$default_core}"
-    core="$(v2bz_normalize_core "$core")"
-
-    cert_mode="none"
-    cert_domain=""
-    cert_provider=""
-    cert_dns_env=""
-    cert_self_fallback="0"
-    read -rp "V2bZ có cần fallback chứng chỉ local không? (auto/none/file/http/dns/self, mặc định none): " cert_mode
-    cert_mode="${cert_mode:-none}"
-    cert_mode="$(tr '[:upper:]' '[:lower:]' <<<"$cert_mode")"
-    if [[ "$cert_mode" != "none" ]]; then
-        read -rp "Nhập domain chứng chỉ: " cert_domain
-        cert_domain="${cert_domain:-}"
+    if [[ "$core_xray" == "1" ]]; then
+        cores_config="$(v2bz_render_core_config xray)"
     fi
-    if [[ "$cert_mode" == "auto" || "$cert_mode" == "dns" ]]; then
-        read -rp "Nhập DNS provider lego (ví dụ cloudflare, bỏ trống nếu dùng HTTP-01): " cert_provider
-        read -rp "Nhập DNS env KEY=VALUE[,KEY=VALUE] (bỏ trống nếu không dùng DNS-01): " cert_dns_env
+    if [[ "$core_sing" == "1" ]]; then
+        core_config="$(v2bz_render_core_config sing)"
+        [[ -n "$cores_config" ]] && cores_config+=","$'\n'
+        cores_config+="$core_config"
     fi
-    if [[ "$cert_mode" == "auto" ]]; then
-        read -rp "Bật self-signed fallback khi ACME lỗi? (y/N): " cert_self_fallback
+    if [[ "$core_hysteria2" == "1" ]]; then
+        core_config="$(v2bz_render_core_config hysteria2)"
+        [[ -n "$cores_config" ]] && cores_config+=","$'\n'
+        cores_config+="$core_config"
     fi
 
-    v2bz_quick_config "$api_host" "$api_key" "$node_id" "$node_type" "$core" "$cert_mode" "$cert_domain" "$cert_provider" "$cert_dns_env" "$cert_self_fallback" 0 0
+    v2bz_write_config_parts "$cores_config" "$nodes_config"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
